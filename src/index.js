@@ -123,7 +123,14 @@ function readHookState() {
     const data = JSON.parse(readFileSync(HOOK_STATE_FILE, 'utf8'));
     if (data.updated && (Date.now() - data.updated) > HOOK_STALE_MS) return null;
     if (!data.tools || Object.keys(data.tools).length === 0) return null;
-    return data.tools;
+    // Convert new format {n, targets[]} or legacy format (bare number) into display shape
+    const running = [];
+    for (const [name, v] of Object.entries(data.tools)) {
+      const entry = typeof v === 'object' && v !== null ? v : { n: v || 0, targets: [] };
+      if (entry.n <= 0) continue;
+      running.push({ name, n: entry.n, target: (entry.targets || []).slice(-1)[0] || '' });
+    }
+    return running.length > 0 ? running : null;
   } catch { return null; }
 }
 
@@ -202,8 +209,13 @@ async function parseTranscript(transcriptPath) {
   }
 
   const toolMap = new Map();
+  const completedBy = new Map(); // name → count (completed in last 2 min)
+  let activeTask = null;        // { subject, done, total } | null
+  let activeTaskTime = 0;
   let sessionStart = null;
   let lineCount = 0;
+  const now = Date.now();
+  const RECENT_MS = 2 * 60 * 1000;
 
   try {
     const rl = createInterface({
@@ -239,6 +251,25 @@ async function parseTranscript(transcriptPath) {
               status: 'running',
               time: ts,
             });
+
+            // Track active task from TodoWrite / TaskUpdate
+            if ((blk.name === 'TodoWrite' || blk.name === 'TaskUpdate' || blk.name === 'TaskCreate') && blk.input) {
+              const inp = blk.input;
+              // TodoWrite: { todos: [{status, content, activeForm}] }
+              if (Array.isArray(inp.todos)) {
+                const active = inp.todos.find(t => t.status === 'in_progress');
+                if (active) {
+                  const done = inp.todos.filter(t => t.status === 'completed').length;
+                  activeTask = { subject: active.content || active.activeForm || '', done, total: inp.todos.length };
+                  activeTaskTime = ts.getTime();
+                }
+              }
+              // TaskUpdate: { subject, status, ... }
+              if (inp.status === 'in_progress' && inp.subject) {
+                activeTask = { subject: inp.subject, done: 0, total: 0 };
+                activeTaskTime = ts.getTime();
+              }
+            }
           }
         }
       }
@@ -250,6 +281,10 @@ async function parseTranscript(transcriptPath) {
             if (tool) {
               tool.status = blk.is_error ? 'error' : 'completed';
               tool.endTime = ts;
+              // Count recently completed
+              if (!blk.is_error && (now - ts.getTime()) < RECENT_MS) {
+                completedBy.set(tool.name, (completedBy.get(tool.name) || 0) + 1);
+              }
             }
           }
         }
@@ -257,8 +292,12 @@ async function parseTranscript(transcriptPath) {
     }
   } catch { /* partial ok */ }
 
+  if (activeTask && (now - activeTaskTime) > RECENT_MS) activeTask = null;
+
   return {
-    tools: Array.from(toolMap.values()).slice(-20),
+    tools: Array.from(toolMap.values()).slice(-30),
+    completedBy,
+    activeTask,
     sessionStart,
   };
 }
@@ -363,26 +402,51 @@ function render(stdin, data) {
     `Tok ${C.dim}in:${C.reset}${tok(totalIn)} ${C.dim}out:${C.reset}${tok(totalOut)} ${C.dim}total:${C.reset}${tok(totalTokens)}`
   );
 
-  // Line 3: running tools (hook primary, transcript fallback)
-  let runningTools = null;
-  if (data.hookTools && Object.keys(data.hookTools).length > 0) {
-    runningTools = data.hookTools;
+  // ── Running tools (hook primary, transcript fallback) ──
+  let runningList = []; // [{name, n, target}]
+
+  if (data.hookTools && data.hookTools.length > 0) {
+    runningList = data.hookTools; // PreToolUse/PostToolUse — most accurate
   } else {
+    // Fallback to transcript-based running detection
     const transcriptRunning = data.tools.filter(t => t.status === 'running');
     if (transcriptRunning.length > 0) {
       const byName = new Map();
-      for (const t of transcriptRunning) byName.set(t.name, (byName.get(t.name) || 0) + 1);
-      runningTools = Object.fromEntries(byName);
+      for (const t of transcriptRunning) {
+        const entry = byName.get(t.name);
+        if (entry) { entry.n++; } else { byName.set(t.name, { name: t.name, n: 1, target: t.target || '' }); }
+      }
+      runningList = Array.from(byName.values());
     }
   }
 
-  if (runningTools) {
-    lines.push(D('─'.repeat(40)));
+  // ── Completed tools (from transcript, last 2 min) ──
+  const completedBy = data.completedBy;
+
+  // ── Line 3: ◐ running | ✓ completed ──
+  const l3 = [];
+  if (runningList.length > 0) {
     const items = [];
-    for (const [name, n] of Object.entries(runningTools)) {
-      items.push(n > 1 ? `${name} ×${n}` : name);
+    for (const r of runningList) {
+      const label = r.target ? `${r.name}: ${r.target}` : r.name;
+      items.push(r.n > 1 ? `${label} ×${r.n}` : label);
     }
-    lines.push(`${C.yellow}◐${C.reset} ${C.cyan}${items.join('  ')}${C.reset}`);
+    l3.push(`${C.yellow}◐${C.reset} ${C.cyan}${items.join('  ')}${C.reset}`);
+  }
+  if (completedBy && completedBy.size > 0) {
+    const items = [];
+    for (const [name, n] of completedBy) {
+      items.push(`${C.dim}✓${C.reset} ${n > 1 ? `${name} ×${n}` : name}`);
+    }
+    l3.push(items.join('  '));
+  }
+  if (l3.length > 0) lines.push(l3.join(` ${C.dim}│${C.reset} `));
+
+  // ── Line 4: ▸ active task ──
+  if (data.activeTask && data.activeTask.subject) {
+    const t = data.activeTask;
+    const progress = t.total > 0 ? ` (${t.done}/${t.total})` : '';
+    lines.push(`${C.yellow}▸${C.reset} ${t.subject}${D(progress)}`);
   }
 
   return lines.join('\n');

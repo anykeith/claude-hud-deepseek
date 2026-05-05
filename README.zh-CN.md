@@ -7,10 +7,10 @@
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT"></a>
   <a href="#"><img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen" alt="Node.js ≥ 18"></a>
-  <a href="#"><img src="https://img.shields.io/badge/dependencies-zero-blue" alt="零依赖"></a>
-  <a href="#"><img src="https://img.shields.io/badge/backend-DeepSeek-536DFE" alt="DeepSeek"></a>
-  <a href="#"><img src="https://img.shields.io/badge/install%20size-~20KB-lightgrey" alt="安装体积 ~20KB"></a>
-  <a href="./README.zh-CN.md"><img src="https://img.shields.io/badge/文档-中文-red" alt="中文文档"></a>
+  <a href="#"><img src="https://img.shields.io/badge/依赖-零-blue" alt="零依赖"></a>
+  <a href="#"><img src="https://img.shields.io/badge/后端-DeepSeek-536DFE" alt="DeepSeek"></a>
+  <a href="#"><img src="https://img.shields.io/badge/安装体积-~20KB-lightgrey" alt="安装体积 ~20KB"></a>
+  <a href="./README.md"><img src="https://img.shields.io/badge/Docs-English-blue" alt="英文文档"></a>
 </p>
 
 ---
@@ -21,15 +21,15 @@
 curl -fsSL https://raw.githubusercontent.com/anykeith/claude-hud-deepseek/main/install.sh | bash
 ```
 
-安装完成后在 Claude Code 中按任意键即可看到效果。无 npm 依赖，不污染 node_modules。
+安装完成后在 Claude Code 中按任意键即可看到效果。**零 npm 依赖**，不污染 node_modules，安装体积仅 ~20KB。
 
 ---
 
 ## 为什么需要它？
 
-Claude Code 内置状态栏依赖 Anthropic 特有的 **rate-limit 响应头**来显示用量数据。DeepSeek 后端**不返回这些头**，导致状态栏空白或信息不全。
+Claude Code 内置状态栏依赖 Anthropic 特有的 **rate-limit 响应头** 来显示用量数据，但 DeepSeek 后端**不返回这些头**，导致使用 DeepSeek 时状态栏信息空白或不完整。
 
-**claude-hud-deepseek** 用 `transcript 解析 + Pre/PostToolUse 双 hook` 替代了这个依赖，即使使用 DeepSeek 后端也能获得完整的状态栏体验。
+本插件用 **transcript 解析 + Pre/PostToolUse 双 hook** 机制完全替代了响应头依赖，让 DeepSeek 用户也能看到完整的上下文用量、Token 统计、工具运行状态、任务进度等关键信息。
 
 ---
 
@@ -46,10 +46,10 @@ Context █████▇░░░░ 52%/1000k │ Tok in:320k out:95k total:4
 
 | 行 | 内容 | 数据来源 |
 |----|------|----------|
-| **1** | 模型名 · 工作目录 · git 分支 (`*`=有变更) · 会话时长 · 配置统计 | stdin + git + `~/.claude/` |
-| **2** | 上下文窗口进度条 + 百分比 + 大小 · 会话 Token 统计（入/出/总） | stdin `context_window` |
-| **3** | ◐ 运行中工具 + 命令/文件名详情 · ✓ 最近完成的工具计数 | Pre/Post 双 hook + transcript |
-| **4** | ▸ 当前活跃任务 + 进度 (N/M) | transcript TodoWrite/TaskUpdate |
+| **1** | 模型名 · 工作目录 · git 分支（`*`=有未提交变更）· 会话时长 · 配置统计 | stdin + git + `~/.claude/` |
+| **2** | 上下文窗口进度条 + 已用百分比 + 总大小 · 会话 Token 入/出/总 | stdin `context_window` |
+| **3** | ◐ 运行中工具含命令/文件名详情 · ✓ 最近完成的工具计数 | Pre/Post 双 hook + transcript |
+| **4** | ▸ 当前活跃任务 + 完成进度 (N/M) | transcript TodoWrite/TaskUpdate |
 
 ---
 
@@ -57,15 +57,15 @@ Context █████▇░░░░ 52%/1000k │ Tok in:320k out:95k total:4
 
 | 特性 | 说明 |
 |------|------|
-| 📊 **上下文窗口进度条** | 直观显示已用/总容量百分比 |
-| 🔢 **Token 统计** | 会话总输入、输出、合计 token 数 |
-| ⚡ **实时工具追踪** | Pre/Post 双 hook 实现 <1 tick 延迟 |
-| 🎯 **工具详情展示** | 显示运行中工具的命令/文件名/描述 |
-| ✅ **已完成工具计数** | 最近 2 分钟内完成的工具统计 |
-| 📋 **任务进度** | 显示当前活跃任务名 + 完成进度 |
-| 🌿 **Git 状态** | 分支名 + 未提交变更标记 |
-| ⏱ **会话时长** | 当前会话持续时间 |
-| 📦 **零依赖** | 不依赖任何 npm 包，安装体积 ~20KB |
+| 📊 **上下文进度条** | 直观展示上下文窗口已用/总容量 |
+| 🔢 **Token 统计** | 会话总输入、输出、合计 token |
+| ⚡ **实时工具追踪** | Pre+Post 双 hook，<1 tick 延迟 |
+| 🎯 **工具详情** | 显示运行中工具的命令/文件名/Agent 描述 |
+| ✅ **已完成工具** | 最近 2 分钟内完成的工具自动统计 |
+| 📋 **任务进度** | 当前活跃任务名称 + 完成进度 |
+| 🌿 **Git 状态** | 分支名 + 未提交变更星标 |
+| ⏱ **会话时长** | 从第一条消息开始的计时 |
+| 📦 **零依赖** | 不依赖任何 npm 包，~20KB |
 | 🔒 **安全设计** | 路径沙箱、ANSI 清洗、无 shell 注入 |
 
 ---
@@ -88,7 +88,7 @@ Context █████▇░░░░ 52%/1000k │ Tok in:320k out:95k total:4
 curl -fsSL https://raw.githubusercontent.com/anykeith/claude-hud-deepseek/main/install.sh | bash
 ```
 
-安装脚本自动完成：
+脚本自动完成：
 1. 克隆（或更新）仓库到 `/opt/projects/claude-hud-deepseek`
 2. 部署 PreToolUse + PostToolUse 双 hook 到 `~/.claude/scripts/hooks/`
 3. 合并 `statusLine` 和 hooks 配置到 `~/.claude/settings.json`
@@ -106,7 +106,7 @@ CLAUDE_HUD_INSTALL_DIR="$HOME/projects/claude-hud-deepseek" curl -fsSL https://r
 git clone https://github.com/anykeith/claude-hud-deepseek.git /opt/projects/claude-hud-deepseek
 ```
 
-`~/.claude/settings.json` 中添加：
+在 `~/.claude/settings.json` 中添加：
 
 ```json
 {
@@ -135,9 +135,11 @@ git clone https://github.com/anykeith/claude-hud-deepseek.git /opt/projects/clau
 }
 ```
 
+重启 Claude Code（或按任意键）即可。
+
 ### 方式三：与官方 claude-hud 共存
 
-两个插件可以并存。将 `statusLine.command` 指向本插件即可，hook 不会互相冲突。
+两个插件可以并存，只需将 `statusLine.command` 指向本插件，hook 不会冲突。
 
 ---
 
@@ -147,25 +149,25 @@ git clone https://github.com/anykeith/claude-hud-deepseek.git /opt/projects/clau
 Claude Code harness（每次 tick）
   │  stdin pipe → { model, cwd, transcript_path, context_window }
   ▼
-src/index.js（零依赖，单文件）
+src/index.js（零依赖，单文件 ~400 行）
   │
   ├─ readStdin()          解析 stdin JSON
   ├─ validateStdin()      输入校验 + transcript 路径沙箱
-  ├─ readHookState()      从双 hook 读取实时运行工具
+  ├─ readHookState()      从 Pre+Post 双 hook 读取实时运行工具
   ├─ parseTranscript()    流式解析 transcript JSONL（回退方案）
   ├─ getGit()             git branch + 脏状态检测
   ├─ getConfigCounts()    扫描 ~/.claude/ 统计配置（5s 缓存）
   └─ render()             ANSI 彩色多行输出 → stdout
 ```
 
-### 实时工具追踪
+### 实时工具追踪精度的关键：双 hook 机制
 
 ```
 PreToolUse  ─→ counter++ 记录 target  ─┐
-                                       ├─ < 1 tick 延迟
+                                       ├─ < 1 tick 延迟，近乎瞬时
 PostToolUse ─→ counter-- 移除 target  ─┘
                                        │
-Hook 超时 (>5s) ─→ transcript 解析回退 ── 1-2 tick 延迟
+Hook 状态过期 (>5s 无活动)              ─→ transcript 解析回退
 ```
 
 ---
@@ -177,7 +179,7 @@ Hook 超时 (>5s) ─→ transcript 解析回退 ── 1-2 tick 延迟
 | 上下文进度条 | ✅ | ✅ |
 | Token 用量追踪 | ✅（rate-limit 头） | ✅（context_window 总计） |
 | 用量限制（5h/7d） | ✅（Anthropic 头） | ❌（DeepSeek 不提供） |
-| 运行中工具检测 | ✅（仅 transcript） | ✅（Pre+Post 双 hook，<1 tick） |
+| 运行中工具检测 | ✅（仅 transcript） | ✅（**Pre+Post 双 hook**，<1 tick） |
 | 已完成工具 ✓ | ✅ | ✅ |
 | 当前任务 ▸ | ✅ | ✅ |
 | 工具详情（targets） | ✅ | ✅ |
@@ -195,7 +197,7 @@ Hook 超时 (>5s) ─→ transcript 解析回退 ── 1-2 tick 延迟
 ```
 .
 ├── README.md                ← 英文文档
-├── README.zh-CN.md           ← 中文文档
+├── README.zh-CN.md           ← 中文文档（你在这里）
 ├── install.sh                ← 一键安装脚本
 ├── package.json              ← 元数据（零依赖）
 ├── .env.example              ← 环境变量模板
@@ -205,15 +207,15 @@ Hook 超时 (>5s) ─→ transcript 解析回退 ── 1-2 tick 延迟
 │   └── CREDENTIALS.md        ← 凭证说明
 └── src/
     ├── index.js              ← 主插件（stdin → 渲染 → stdout）
-    ├── tool-tracker.cjs      ← PreToolUse hook（递增计数）
-    └── tool-tracker-post.cjs ← PostToolUse hook（递减计数）
+    ├── tool-tracker.cjs      ← PreToolUse hook（递增计数 + 记录 target）
+    └── tool-tracker-post.cjs ← PostToolUse hook（递减计数 + 清理）
 ```
 
 ---
 
 ## 配置
 
-`src/index.js` 中的可调常量：
+`src/index.js` 中可调的常量：
 
 | 常量 | 默认值 | 说明 |
 |------|--------|------|
@@ -230,16 +232,16 @@ Hook 超时 (>5s) ─→ transcript 解析回退 ── 1-2 tick 延迟
 <summary><b>状态栏不显示</b></summary>
 
 ```bash
-# 1. 检查 Node.js 版本
-node -v  # 需要 ≥ 18
+# 1. Node.js ≥ 18
+node -v
 
-# 2. 验证 settings.json 合法性
+# 2. 验证 settings.json 是合法 JSON
 python3 -m json.tool ~/.claude/settings.json > /dev/null
 
-# 3. 确认插件路径
+# 3. 确认插件文件存在
 ls /opt/projects/claude-hud-deepseek/src/index.js
 
-# 4. 独立测试
+# 4. 独立测试插件
 echo '{"context_window":{"used_percentage":50}}' | node /opt/projects/claude-hud-deepseek/src/index.js
 ```
 </details>
@@ -265,8 +267,8 @@ cat /tmp/claude-hud-tools.json
 <summary><b>Git 分支不显示</b></summary>
 
 ```bash
-git --version    # 确保 git 已安装
-git branch       # 确保当前目录是 git 仓库且至少有一次提交
+git --version
+git branch  # 确保当前目录是 git 仓库且至少有一次提交
 ```
 </details>
 
@@ -276,9 +278,9 @@ git branch       # 确保当前目录是 git 仓库且至少有一次提交
 
 | 措施 | 说明 |
 |------|------|
-| **路径沙箱** | `transcript_path` 限制在 `~/.claude/projects/` 内，拒绝路径穿越 |
-| **文件大小保护** | transcript > 5MB 或非普通文件直接拒绝 |
-| **密钥不落地** | `settings.json` 只提取计数，原始对象立即丢弃 |
+| **路径沙箱** | `transcript_path` 限制在 `~/.claude/projects/` 内，拒绝路径穿越攻击 |
+| **文件大小保护** | transcript > 5MB 或非普通文件（如 `/dev/zero`）直接拒绝 |
+| **密钥不落地** | `settings.json` 只提取数字计数，原始对象立即丢弃 |
 | **ANSI 清洗** | 所有用户可控字符串渲染前剥离 ANSI 转义序列 |
 | **无 Shell 注入** | Git 命令使用硬编码字符串 + `cwd` 选项 |
 
@@ -290,20 +292,21 @@ git branch       # 确保当前目录是 git 仓库且至少有一次提交
 rm -rf /opt/projects/claude-hud-deepseek
 ```
 
-然后从 `~/.claude/settings.json` 中移除 `statusLine`、`PreToolUse`、`PostToolUse` 相关条目。
+然后从 `~/.claude/settings.json` 中移除 `statusLine`、`PreToolUse`、`PostToolUse` 相关配置即可。
 
 ---
 
 ## 参与贡献
 
-欢迎提交 Issue 和 Pull Request。提交前：
+欢迎提交 Issue 和 PR。提交前请测试：
 
 ```bash
-# 测试你的改动
 echo '{"model":{"display_name":"deepseek-v4-pro"},"cwd":"/root","context_window":{"used_percentage":45,"context_window_size":100000,"total_input_tokens":450000,"total_output_tokens":82000},"transcript_path":""}' | node src/index.js
 ```
 
-核心原则：**零依赖**（设计约束）、**无 fallback**（失败显式报错）。
+核心原则：
+- **零依赖** — 这是设计约束，不是偏好
+- **无 fallback** — 失败必须显式报错，绝不静默降级
 
 ---
 
