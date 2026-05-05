@@ -194,28 +194,29 @@ function getConfigCounts() {
 // Transcript parsing — streaming, size-guarded
 // ═══════════════════════════════════════════════════════
 
+const EMPTY_TRANSCRIPT = Object.freeze({ tools: [], completedBy: new Map(), activeTask: null, sessionStart: null });
+
 async function parseTranscript(transcriptPath) {
   if (!transcriptPath || !existsSync(transcriptPath)) {
-    return { tools: [], sessionStart: null };
+    return EMPTY_TRANSCRIPT;
   }
 
   try {
     const st = statSync(transcriptPath);
     if (!st.isFile() || st.size > MAX_TRANSCRIPT_BYTES) {
-      return { tools: [], sessionStart: null };
+      return EMPTY_TRANSCRIPT;
     }
   } catch {
-    return { tools: [], sessionStart: null };
+    return EMPTY_TRANSCRIPT;
   }
 
   const toolMap = new Map();
-  const completedBy = new Map(); // name → count (completed in last 2 min)
+  const completedBy = new Map(); // name → count (session total)
   let activeTask = null;        // { subject, done, total } | null
   let activeTaskTime = 0;
   let sessionStart = null;
   let lineCount = 0;
   const now = Date.now();
-  const RECENT_MS = 2 * 60 * 1000;
 
   try {
     const rl = createInterface({
@@ -281,8 +282,8 @@ async function parseTranscript(transcriptPath) {
             if (tool) {
               tool.status = blk.is_error ? 'error' : 'completed';
               tool.endTime = ts;
-              // Count recently completed
-              if (!blk.is_error && (now - ts.getTime()) < RECENT_MS) {
+              // Count completed (session total)
+              if (!blk.is_error) {
                 completedBy.set(tool.name, (completedBy.get(tool.name) || 0) + 1);
               }
             }
@@ -291,8 +292,6 @@ async function parseTranscript(transcriptPath) {
       }
     }
   } catch { /* partial ok */ }
-
-  if (activeTask && (now - activeTaskTime) > RECENT_MS) activeTask = null;
 
   return {
     tools: Array.from(toolMap.values()).slice(-30),
