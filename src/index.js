@@ -11,7 +11,7 @@
 
 import { existsSync, statSync, readFileSync, createReadStream, readdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { resolve, normalize } from 'node:path';
+import { resolve, normalize, basename } from 'node:path';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 
@@ -26,8 +26,13 @@ const RULES_DIR = resolve(HOME, '.claude/rules/common');
 const MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024;
 const MAX_TRANSCRIPT_LINES = 2000;
 const STDIN_MAX_BYTES = 256 * 1024;
-const HOOK_STATE_FILE = '/tmp/claude-hud-tools.json';
 const HOOK_STALE_MS = 5_000;
+
+function hookStateFile(transcriptPath) {
+  if (!transcriptPath) return '';
+  const stem = basename(transcriptPath, '.jsonl');
+  return stem ? `/tmp/claude-hud-tools-${stem}.json` : '';
+}
 
 // ═══════════════════════════════════════════════════════
 // ANSI
@@ -118,10 +123,11 @@ function validateStdin(data) {
 
 const RECENT_VISIBLE_MS = 3_000;
 
-function readHookState() {
+function readHookState(stateFile) {
+  if (!stateFile) return null;
   try {
-    if (!existsSync(HOOK_STATE_FILE)) return null;
-    const data = JSON.parse(readFileSync(HOOK_STATE_FILE, 'utf8'));
+    if (!existsSync(stateFile)) return null;
+    const data = JSON.parse(readFileSync(stateFile, 'utf8'));
     if (data.updated && (Date.now() - data.updated) > HOOK_STALE_MS) return null;
     if (!data.tools || Object.keys(data.tools).length === 0) return null;
 
@@ -515,7 +521,7 @@ try {
     parseTranscript(stdin.transcript_path),
     Promise.resolve(getGit(stdin.cwd)),
     Promise.resolve(getConfigCounts()),
-    Promise.resolve(readHookState()),
+    Promise.resolve(readHookState(hookStateFile(stdin.transcript_path))),
   ]);
 
   const output = render(stdin, { ...transcriptData, git, config, hookTools });

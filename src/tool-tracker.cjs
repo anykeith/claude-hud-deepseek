@@ -2,7 +2,12 @@
 'use strict';
 
 const { writeFileSync, existsSync, readFileSync } = require('node:fs');
-const STATE_FILE = '/tmp/claude-hud-tools.json';
+const { basename } = require('node:path');
+
+function stateFile(transcriptPath) {
+  const stem = basename(transcriptPath || '', '.jsonl');
+  return stem ? `/tmp/claude-hud-tools-${stem}.json` : '/tmp/claude-hud-tools.json';
+}
 
 function extractTarget(name, input) {
   if (!input) return '';
@@ -39,11 +44,12 @@ process.stdin.on('end', () => {
     if (!name) return;
 
     const target = extractTarget(name, input.tool_input);
+    const file = stateFile(input.transcript_path);
 
     let state = { tools: {}, updated: 0 };
     try {
-      if (existsSync(STATE_FILE)) {
-        state = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+      if (existsSync(file)) {
+        state = JSON.parse(readFileSync(file, 'utf8'));
       }
     } catch { /* corrupt */ }
 
@@ -56,6 +62,6 @@ process.stdin.on('end', () => {
     state.tools[name] = entry;
     state.updated = Date.now();
 
-    writeFileSync(STATE_FILE, JSON.stringify(state));
+    writeFileSync(file, JSON.stringify(state));
   } catch { /* never break hook */ }
 });
