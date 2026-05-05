@@ -524,7 +524,15 @@ try {
     Promise.resolve(readHookState(hookStateFile(safeString(raw.transcript_path)))),
   ]);
 
-  const output = render(stdin, { ...transcriptData, git, config, hookTools });
+  const output = render(stdin, {
+    tools: transcriptData.tools,
+    completedBy: transcriptData.completedBy,
+    activeTask: transcriptData.activeTask,
+    sessionStart: transcriptData.sessionStart,
+    git,
+    config,
+    hookTools,
+  });
   if (output) console.log(output);
 } catch {
   process.exit(0);
