@@ -230,7 +230,9 @@ async function parseTranscript(transcriptPath) {
 
   const toolMap = new Map();
   const completedBy = new Map(); // name → count (session total)
-  let activeTask = null;        // { subject, done, total } | null
+  const createSubjectById = new Map(); // tool_use id → subject (for TaskCreate)
+  const taskSubjectById = new Map();   // taskId → subject (for TaskUpdate lookup)
+  let activeTask = null;              // { subject, done, total } | null
   let sessionStart = null;
   let lineCount = 0;
 
@@ -269,19 +271,30 @@ async function parseTranscript(transcriptPath) {
               time: ts,
             });
 
-            // Track active task from TodoWrite / TaskUpdate
-            if ((blk.name === 'TodoWrite' || blk.name === 'TaskUpdate' || blk.name === 'TaskCreate') && blk.input) {
-              const inp = blk.input;
-              // TodoWrite: { todos: [{status, content, activeForm}] }
-              if (Array.isArray(inp.todos)) {
-                const active = inp.todos.find(t => t.status === 'in_progress');
-                if (active) {
-                  const done = inp.todos.filter(t => t.status === 'completed').length;
-                  activeTask = { subject: active.content || active.activeForm || '', done, total: inp.todos.length };
-                }
+            const inp = blk.input || {};
+
+            // TodoWrite: { todos: [{status, content, activeForm}] }
+            if (blk.name === 'TodoWrite' && Array.isArray(inp.todos)) {
+              const active = inp.todos.find(t => t.status === 'in_progress');
+              if (active) {
+                const done = inp.todos.filter(t => t.status === 'completed').length;
+                activeTask = { subject: active.content || active.activeForm || '', done, total: inp.todos.length };
               }
-              // TaskUpdate: { subject, status, ... }
-              if (inp.status === 'in_progress' && inp.subject) {
+            }
+
+            // TaskCreate: remember subject for later taskId resolution
+            if (blk.name === 'TaskCreate' && inp.subject) {
+              createSubjectById.set(blk.id, inp.subject);
+            }
+
+            // TaskUpdate: resolve subject via taskId → subject map
+            if (blk.name === 'TaskUpdate' && inp.status === 'in_progress' && inp.taskId) {
+              const subject = taskSubjectById.get(String(inp.taskId));
+              if (subject) {
+                activeTask = { subject, done: 0, total: 0 };
+              }
+              // Also try direct subject (some harness versions include it)
+              if (inp.subject) {
                 activeTask = { subject: inp.subject, done: 0, total: 0 };
               }
             }
@@ -296,9 +309,20 @@ async function parseTranscript(transcriptPath) {
             if (tool) {
               tool.status = blk.is_error ? 'error' : 'completed';
               tool.endTime = ts;
-              // Count completed (session total)
               if (!blk.is_error) {
                 completedBy.set(tool.name, (completedBy.get(tool.name) || 0) + 1);
+              }
+            }
+
+            // TaskCreate result: extract taskId from "Task #N created successfully: ..."
+            const subject = createSubjectById.get(blk.tool_use_id);
+            if (subject && !blk.is_error) {
+              const resultText = typeof blk.content === 'string'
+                ? blk.content
+                : Array.isArray(blk.content) ? blk.content.map(c => c.text || '').join('') : '';
+              const m = resultText.match(/Task #(\d+)/);
+              if (m) {
+                taskSubjectById.set(m[1], subject);
               }
             }
           }
