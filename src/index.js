@@ -279,6 +279,8 @@ async function parseTranscript(transcriptPath) {
               if (active) {
                 const done = inp.todos.filter(t => t.status === 'completed').length;
                 activeTask = { subject: active.content || active.activeForm || '', done, total: inp.todos.length };
+              } else {
+                activeTask = null; // no active task in this TodoWrite
               }
             }
 
@@ -288,14 +290,16 @@ async function parseTranscript(transcriptPath) {
             }
 
             // TaskUpdate: resolve subject via taskId → subject map
-            if (blk.name === 'TaskUpdate' && inp.status === 'in_progress' && inp.taskId) {
-              const subject = taskSubjectById.get(String(inp.taskId));
-              if (subject) {
+            if (blk.name === 'TaskUpdate' && inp.taskId) {
+              const tid = String(inp.taskId);
+              const subject = taskSubjectById.get(tid) || inp.subject;
+              if (inp.status === 'in_progress' && subject) {
                 activeTask = { subject, done: 0, total: 0 };
-              }
-              // Also try direct subject (some harness versions include it)
-              if (inp.subject) {
-                activeTask = { subject: inp.subject, done: 0, total: 0 };
+              } else if (inp.status === 'completed' || inp.status === 'cancelled') {
+                // Task finished — clear if this was the active task
+                if (activeTask && activeTask.subject === subject) {
+                  activeTask = null;
+                }
               }
             }
           }
