@@ -3,11 +3,10 @@
 /**
  * claude-hud-deepseek — Status line plugin for Claude Code with DeepSeek backend.
  *
- * Lines:
  *   [model] │ cwd git:(branch*) │ ⏱ 1h │ 2 CLAUDE.md │ 10 rules │ 8 hooks
  *   Context ████░░░░ 45%/1000k │ Tok in:80k out:40k total:120k
- *   ─────────────────────────────────
- *   ◐ Bash ×3  Read ×2
+ *   ◐ Bash: cmd  Read: file  │ ✓ Bash ×3  ✓ Read ×2
+ *   ▸ Fix auth bug (2/5)
  */
 
 import { existsSync, statSync, readFileSync, createReadStream, readdirSync } from 'node:fs';
@@ -117,20 +116,37 @@ function validateStdin(data) {
 // Hook state — running tool counters from PreToolUse hook
 // ═══════════════════════════════════════════════════════
 
+const RECENT_VISIBLE_MS = 3_000;
+
 function readHookState() {
   try {
     if (!existsSync(HOOK_STATE_FILE)) return null;
     const data = JSON.parse(readFileSync(HOOK_STATE_FILE, 'utf8'));
     if (data.updated && (Date.now() - data.updated) > HOOK_STALE_MS) return null;
     if (!data.tools || Object.keys(data.tools).length === 0) return null;
-    // Convert new format {n, targets[]} or legacy format (bare number) into display shape
+
     const running = [];
+    const recent = new Map(); // name → count
+
     for (const [name, v] of Object.entries(data.tools)) {
-      const entry = typeof v === 'object' && v !== null ? v : { n: v || 0, targets: [] };
-      if (entry.n <= 0) continue;
-      running.push({ name, n: entry.n, target: (entry.targets || []).slice(-1)[0] || '' });
+      const entry = typeof v === 'object' && v !== null ? v : { n: v || 0, targets: [], recent: [] };
+      // Running tools — show with target detail
+      if (entry.n > 0) {
+        running.push({ name, n: entry.n, target: (entry.targets || []).slice(-1)[0] || '' });
+      }
+      // Recently completed — visible for RECENT_VISIBLE_MS
+      const now = Date.now();
+      for (const r of (entry.recent || [])) {
+        if (r.at && (now - r.at) < RECENT_VISIBLE_MS) {
+          recent.set(name, (recent.get(name) || 0) + 1);
+        }
+      }
     }
-    return running.length > 0 ? running : null;
+
+    return {
+      running: running.length > 0 ? running : null,
+      recent: recent.size > 0 ? recent : null,
+    };
   } catch { return null; }
 }
 
@@ -194,29 +210,29 @@ function getConfigCounts() {
 // Transcript parsing — streaming, size-guarded
 // ═══════════════════════════════════════════════════════
 
-const EMPTY_TRANSCRIPT = Object.freeze({ tools: [], completedBy: new Map(), activeTask: null, sessionStart: null });
+function emptyTranscript() {
+  return { tools: [], completedBy: new Map(), activeTask: null, sessionStart: null };
+}
 
 async function parseTranscript(transcriptPath) {
   if (!transcriptPath || !existsSync(transcriptPath)) {
-    return EMPTY_TRANSCRIPT;
+    return emptyTranscript();
   }
 
   try {
     const st = statSync(transcriptPath);
     if (!st.isFile() || st.size > MAX_TRANSCRIPT_BYTES) {
-      return EMPTY_TRANSCRIPT;
+      return emptyTranscript();
     }
   } catch {
-    return EMPTY_TRANSCRIPT;
+    return emptyTranscript();
   }
 
   const toolMap = new Map();
   const completedBy = new Map(); // name → count (session total)
   let activeTask = null;        // { subject, done, total } | null
-  let activeTaskTime = 0;
   let sessionStart = null;
   let lineCount = 0;
-  const now = Date.now();
 
   try {
     const rl = createInterface({
@@ -262,13 +278,11 @@ async function parseTranscript(transcriptPath) {
                 if (active) {
                   const done = inp.todos.filter(t => t.status === 'completed').length;
                   activeTask = { subject: active.content || active.activeForm || '', done, total: inp.todos.length };
-                  activeTaskTime = ts.getTime();
                 }
               }
               // TaskUpdate: { subject, status, ... }
               if (inp.status === 'in_progress' && inp.subject) {
                 activeTask = { subject: inp.subject, done: 0, total: 0 };
-                activeTaskTime = ts.getTime();
               }
             }
           }
@@ -402,10 +416,12 @@ function render(stdin, data) {
   );
 
   // ── Running tools (hook primary, transcript fallback) ──
-  let runningList = []; // [{name, n, target}]
+  let runningList = [];   // [{name, n, target}]
+  let hookRecent = null;  // Map name→count from hook post-completion
 
-  if (data.hookTools && data.hookTools.length > 0) {
-    runningList = data.hookTools; // PreToolUse/PostToolUse — most accurate
+  if (data.hookTools) {
+    if (data.hookTools.running) runningList = data.hookTools.running;
+    hookRecent = data.hookTools.recent;
   } else {
     // Fallback to transcript-based running detection
     const transcriptRunning = data.tools.filter(t => t.status === 'running');
@@ -419,8 +435,13 @@ function render(stdin, data) {
     }
   }
 
-  // ── Completed tools (from transcript, last 2 min) ──
-  const completedBy = data.completedBy;
+  // ── Completed tools — merge hook recent with transcript totals ──
+  const completedBy = new Map(data.completedBy || []);
+  if (hookRecent) {
+    for (const [name, n] of hookRecent) {
+      completedBy.set(name, (completedBy.get(name) || 0) + n);
+    }
+  }
 
   // ── Line 3: ◐ running | ✓ completed ──
   const l3 = [];
@@ -432,7 +453,7 @@ function render(stdin, data) {
     }
     l3.push(`${C.yellow}◐${C.reset} ${C.cyan}${items.join('  ')}${C.reset}`);
   }
-  if (completedBy && completedBy.size > 0) {
+  if (completedBy.size > 0) {
     const items = [];
     for (const [name, n] of completedBy) {
       items.push(`${C.dim}✓${C.reset} ${n > 1 ? `${name} ×${n}` : name}`);
