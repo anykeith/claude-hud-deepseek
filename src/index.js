@@ -3,21 +3,15 @@
 /**
  * claude-hud-deepseek — Status line plugin for Claude Code with DeepSeek backend.
  *
- * Shows context window usage, session token totals, tool/agent/task activity,
- * git branch, session duration, and config counts.
- *
- * Lines (expanded layout):
- *   [model] │ project git:(branch*) │ ⏱ 5m │ 1 CLAUDE.md │ 10 rules
- *   Context ████░░░░ 45%/1000k │ Tok in:45k out:12k total:57k
+ * Lines:
+ *   [model] │ cwd git:(branch*) │ ⏱ 1h │ 2 CLAUDE.md │ 10 rules │ 8 hooks
+ *   Context ████░░░░ 45%/1000k │ Tok in:80k out:40k total:120k
  *   ─────────────────────────────────
- *   ◐ Edit: file.ts | ✓ Read ×3  Write
- *   ◐ explore [haiku]: Finding code
- *   ▸ Fix auth bug (2/5)
+ *   ◐ Bash ×3  Read ×2
  */
 
-import { existsSync, statSync, readFileSync, createReadStream } from 'node:fs';
+import { existsSync, statSync, readFileSync, createReadStream, readdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
 import { resolve, normalize } from 'node:path';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
@@ -30,12 +24,14 @@ const HOME = homedir();
 const TRANSCRIPT_DIR = resolve(HOME, '.claude/projects');
 const SETTINGS_PATH = resolve(HOME, '.claude/settings.json');
 const RULES_DIR = resolve(HOME, '.claude/rules/common');
-const MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024; // 5MB cap
+const MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024;
 const MAX_TRANSCRIPT_LINES = 2000;
 const STDIN_MAX_BYTES = 256 * 1024;
+const HOOK_STATE_FILE = '/tmp/claude-hud-tools.json';
+const HOOK_STALE_MS = 5_000;
 
 // ═══════════════════════════════════════════════════════
-// ANSI helpers
+// ANSI
 // ═══════════════════════════════════════════════════════
 
 const ANSI_RE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
@@ -48,10 +44,8 @@ function stripAnsi(s) {
 const C = {
   reset: '\x1b[0m',
   dim: '\x1b[2m',
-  green: '\x1b[32m',
   yellow: '\x1b[33m',
   cyan: '\x1b[36m',
-  magenta: '\x1b[35m',
   white: '\x1b[37m',
 };
 const D = (s) => `${C.dim}${stripAnsi(s)}${C.reset}`;
@@ -78,7 +72,7 @@ function readStdin() {
     const onD = (c) => {
       raw += String(c);
       if (Buffer.byteLength(raw, 'utf8') > STDIN_MAX_BYTES) { done(null); return; }
-      try { const o = JSON.parse(raw.trim()); done(o); } catch {}
+      try { done(JSON.parse(raw.trim())); } catch {}
     };
     const onE = () => { try { done(JSON.parse(raw.trim())); } catch { done(null); } };
     const onErr = () => done(null);
@@ -99,6 +93,12 @@ function safeString(v) {
   return '';
 }
 
+function sanitizeTranscriptPath(userPath) {
+  if (!userPath) return '';
+  const resolved = resolve(userPath);
+  return normalize(resolved).startsWith(normalize(TRANSCRIPT_DIR)) ? resolved : '';
+}
+
 function validateStdin(data) {
   if (!data || typeof data !== 'object') return null;
   if (!data.context_window || typeof data.context_window !== 'object') return null;
@@ -113,16 +113,18 @@ function validateStdin(data) {
   };
 }
 
-/**
- * Reject transcript paths outside the Claude Code transcript directory.
- */
-function sanitizeTranscriptPath(userPath) {
-  if (!userPath) return '';
-  const resolved = resolve(userPath);
-  const rel = normalize(resolved).startsWith(normalize(TRANSCRIPT_DIR))
-    ? resolved
-    : '';
-  return rel;
+// ═══════════════════════════════════════════════════════
+// Hook state — running tool counters from PreToolUse hook
+// ═══════════════════════════════════════════════════════
+
+function readHookState() {
+  try {
+    if (!existsSync(HOOK_STATE_FILE)) return null;
+    const data = JSON.parse(readFileSync(HOOK_STATE_FILE, 'utf8'));
+    if (data.updated && (Date.now() - data.updated) > HOOK_STALE_MS) return null;
+    if (!data.tools || Object.keys(data.tools).length === 0) return null;
+    return data.tools;
+  } catch { return null; }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -139,24 +141,20 @@ function getGit(cwd) {
     const status = execSync('git status --porcelain 2>/dev/null', {
       cwd, encoding: 'utf8', timeout: 2000,
     });
-    const dirty = status.trim().length > 0;
-    return { branch: stripAnsi(branch), dirty };
+    return { branch: stripAnsi(branch), dirty: status.trim().length > 0 };
   } catch { return null; }
 }
 
 // ═══════════════════════════════════════════════════════
-// Config counts — read settings.json ONCE, extract scalars only
+// Config counts — cached 5s
 // ═══════════════════════════════════════════════════════
 
 let _configCache = null;
 let _configCacheTime = 0;
-const CONFIG_CACHE_MS = 5000; // cache for 5 seconds between ticks
 
 function getConfigCounts() {
   const now = Date.now();
-  if (_configCache && (now - _configCacheTime) < CONFIG_CACHE_MS) {
-    return _configCache;
-  }
+  if (_configCache && (now - _configCacheTime) < 5000) return _configCache;
 
   let claudeMd = 0, rules = 0, mcps = 0, hooks = 0;
 
@@ -164,19 +162,15 @@ function getConfigCounts() {
     if (existsSync(resolve(process.cwd(), 'CLAUDE.md'))) claudeMd++;
     if (existsSync(resolve(HOME, '.claude/CLAUDE.md'))) claudeMd++;
   } catch {}
-
   try {
     if (existsSync(RULES_DIR)) {
       rules = readdirSync(RULES_DIR).filter(f => f.endsWith('.md')).length;
     }
   } catch {}
-
-  // Read settings.json ONCE, extract only what we need, then discard
   try {
     if (existsSync(SETTINGS_PATH)) {
       const raw = readFileSync(SETTINGS_PATH, 'utf8');
       const settings = JSON.parse(raw);
-      // Immediately extract counts — do NOT retain the full object
       mcps = Object.keys(settings.mcpServers || {}).length;
       for (const phase of Object.values(settings.hooks || {})) {
         hooks += (Array.isArray(phase) ? phase : []).reduce((n, g) => n + (g.hooks || []).length, 0);
@@ -190,53 +184,47 @@ function getConfigCounts() {
 }
 
 // ═══════════════════════════════════════════════════════
-// Transcript parsing — streaming read with size guard
+// Transcript parsing — streaming, size-guarded
 // ═══════════════════════════════════════════════════════
 
 async function parseTranscript(transcriptPath) {
   if (!transcriptPath || !existsSync(transcriptPath)) {
-    return { tools: [], agents: [], todos: [], sessionStart: null };
+    return { tools: [], sessionStart: null };
   }
 
-  // Size guard — reject files too large or character devices
-  let fileSize;
   try {
-    const stat = statSync(transcriptPath);
-    if (!stat.isFile()) return { tools: [], agents: [], todos: [], sessionStart: null };
-    if (stat.size > MAX_TRANSCRIPT_BYTES) return { tools: [], agents: [], todos: [], sessionStart: null };
-    fileSize = stat.size;
+    const st = statSync(transcriptPath);
+    if (!st.isFile() || st.size > MAX_TRANSCRIPT_BYTES) {
+      return { tools: [], sessionStart: null };
+    }
   } catch {
-    return { tools: [], agents: [], todos: [], sessionStart: null };
+    return { tools: [], sessionStart: null };
   }
 
   const toolMap = new Map();
-  const agentMap = new Map();
-  const taskIdToIdx = new Map();
-  let todos = [];
   let sessionStart = null;
   let lineCount = 0;
 
   try {
-    const fileStream = createReadStream(transcriptPath, { encoding: 'utf8' });
-    const rl = createInterface({ input: fileStream, crlfDelay: Infinity });
+    const rl = createInterface({
+      input: createReadStream(transcriptPath, { encoding: 'utf8' }),
+      crlfDelay: Infinity,
+    });
 
     for await (const line of rl) {
-      lineCount++;
-      if (lineCount > MAX_TRANSCRIPT_LINES) break; // safety cap
+      if (++lineCount > MAX_TRANSCRIPT_LINES) break;
       if (!line.trim()) continue;
 
       let entry;
       try { entry = JSON.parse(line); } catch { continue; }
 
-      // Session start — first valid timestamp
       if (!sessionStart && entry.timestamp) {
         const ts = new Date(entry.timestamp);
         if (!Number.isNaN(ts.getTime())) sessionStart = ts;
       }
 
       const ts = entry.timestamp && !Number.isNaN(new Date(entry.timestamp).getTime())
-        ? new Date(entry.timestamp)
-        : null;
+        ? new Date(entry.timestamp) : null;
       if (!ts) continue;
 
       const blocks = entry.message?.content;
@@ -244,53 +232,13 @@ async function parseTranscript(transcriptPath) {
 
       if (entry.type === 'assistant') {
         for (const blk of blocks) {
-          if (blk.type !== 'tool_use' || !blk.id || !blk.name) continue;
-
-          const target = extractTarget(blk.name, blk.input);
-          toolMap.set(blk.id, { name: blk.name, target, status: 'running', time: ts });
-
-          if (blk.name === 'Task' || blk.name === 'Agent') {
-            agentMap.set(blk.id, {
-              id: blk.id,
-              type: safeString(blk.input?.subagent_type) || 'agent',
-              model: safeString(blk.input?.model),
-              description: safeString(blk.input?.description),
+          if (blk.type === 'tool_use' && blk.id && blk.name) {
+            toolMap.set(blk.id, {
+              name: blk.name,
+              target: extractTarget(blk.name, blk.input),
               status: 'running',
-              startTime: ts,
+              time: ts,
             });
-          }
-
-          if (blk.name === 'TodoWrite' && Array.isArray(blk.input?.todos)) {
-            taskIdToIdx.clear();
-            todos = blk.input.todos.map((t, i) => {
-              const tid = String(t.taskId || i);
-              taskIdToIdx.set(tid, i);
-              return {
-                content: stripAnsi(t.content || t.subject || ''),
-                status: normStatus(t.status) || 'pending',
-              };
-            });
-          }
-
-          if (blk.name === 'TaskCreate') {
-            const sub = stripAnsi(blk.input?.subject || blk.input?.description || '');
-            if (sub) {
-              const idx = todos.length;
-              todos.push({ content: sub, status: normStatus(blk.input?.status) || 'pending' });
-              taskIdToIdx.set(String(blk.input?.taskId || blk.id || idx), idx);
-            }
-          }
-
-          if (blk.name === 'TaskUpdate') {
-            const idx = resolveTaskIdx(blk.input?.taskId, taskIdToIdx, todos);
-            if (idx !== null && idx < todos.length) {
-              if (blk.input?.status) {
-                const s = normStatus(blk.input.status);
-                if (s) todos[idx].status = s;
-              }
-              const nc = blk.input?.subject || blk.input?.description;
-              if (nc) todos[idx].content = stripAnsi(nc);
-            }
           }
         }
       }
@@ -303,32 +251,16 @@ async function parseTranscript(transcriptPath) {
               tool.status = blk.is_error ? 'error' : 'completed';
               tool.endTime = ts;
             }
-            const agent = agentMap.get(blk.tool_use_id);
-            if (agent) { agent.status = 'completed'; agent.endTime = ts; }
-
-            // Extract system task ID from TaskCreate result (e.g. "Task #5 created successfully")
-            if (typeof blk.content === 'string') {
-              const m = blk.content.match(/Task #(\d+)/);
-              if (m && taskIdToIdx.has(blk.tool_use_id)) {
-                const sysId = m[1];
-                const idx = taskIdToIdx.get(blk.tool_use_id);
-                taskIdToIdx.delete(blk.tool_use_id);
-                taskIdToIdx.set(sysId, idx);
-              }
-            }
           }
         }
       }
     }
-  } catch {
-    // Return partial results on read error
-  }
+  } catch { /* partial ok */ }
 
-  // Collect last 20 tools and last 10 agents
-  const tools = Array.from(toolMap.values()).slice(-20);
-  const agents = Array.from(agentMap.values()).slice(-10);
-
-  return { tools, agents, todos, sessionStart };
+  return {
+    tools: Array.from(toolMap.values()).slice(-20),
+    sessionStart,
+  };
 }
 
 function extractTarget(name, input) {
@@ -345,30 +277,7 @@ function extractTarget(name, input) {
     case 'Glob': return stripAnsi(input.pattern || '');
     case 'Grep': return stripAnsi(input.pattern || '');
     case 'Skill': return stripAnsi(input.skill || '');
-    case 'Agent': case 'Task':
-      return stripAnsi(input.description || input.subagent_type || '');
     default: return undefined;
-  }
-}
-
-function resolveTaskIdx(taskId, map, todos) {
-  if (typeof taskId === 'string' || typeof taskId === 'number') {
-    const k = String(taskId);
-    if (map.has(k)) return map.get(k);
-    if (/^\d+$/.test(k)) {
-      const i = parseInt(k, 10) - 1;
-      if (i >= 0 && i < todos.length) return i;
-    }
-  }
-  return null;
-}
-
-function normStatus(s) {
-  switch (s) {
-    case 'pending': case 'not_started': return 'pending';
-    case 'in_progress': case 'running': return 'in_progress';
-    case 'completed': case 'done': return 'completed';
-    default: return null;
   }
 }
 
@@ -406,20 +315,6 @@ function dur(ms) {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-function elapsed(start, end) {
-  const ms = Math.max(0, (end || Date.now()) - start.getTime());
-  if (ms < 1000) return '<1s';
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  const s = Math.floor(ms / 1000);
-  return `${Math.floor(s / 60)}m ${s % 60}s`;
-}
-
-function trunc(s, max = 40) {
-  const clean = stripAnsi(s);
-  if (clean.length <= max) return clean;
-  return clean.slice(0, max - 3) + '...';
-}
-
 // ═══════════════════════════════════════════════════════
 // Render
 // ═══════════════════════════════════════════════════════
@@ -435,7 +330,7 @@ function render(stdin, data) {
 
   const lines = [];
 
-  // ── Line 1: [model] │ cwd git │ ⏱ │ configs ──────
+  // Line 1: [model] │ cwd git │ ⏱ │ configs
   const l1 = [];
   l1.push(`${C.white}[${model}]${C.reset}`);
 
@@ -458,54 +353,36 @@ function render(stdin, data) {
 
   lines.push(l1.join(` ${C.dim}│${C.reset} `));
 
-  // ── Line 2: Context bar + tokens ──────────────────
-  const l2 = [];
+  // Line 2: context bar + token totals
   const ctxBar = bar(pct);
   const sizeStr = size ? `${Math.round(size / 1000)}k` : '?';
   const totalTokens = totalIn + totalOut;
-  l2.push(`Context ${ctxBar} ${pct}%/${sizeStr}`);
-  l2.push(`Tok ${C.dim}in:${C.reset}${tok(totalIn)} ${C.dim}out:${C.reset}${tok(totalOut)} ${C.dim}total:${C.reset}${tok(totalTokens)}`);
-  lines.push(l2.join(` ${C.dim}│${C.reset} `));
+  lines.push(
+    `Context ${ctxBar} ${pct}%/${sizeStr}` +
+    ` ${C.dim}│${C.reset} ` +
+    `Tok ${C.dim}in:${C.reset}${tok(totalIn)} ${C.dim}out:${C.reset}${tok(totalOut)} ${C.dim}total:${C.reset}${tok(totalTokens)}`
+  );
 
-  // ── Activity separator ─────────────────────────────
-  const hasActivity =
-    data.tools.some(t => t.status === 'running') ||
-    data.agents.some(a => a.status === 'running') ||
-    data.todos.some(t => t.status === 'in_progress') ||
-    (data.todos.length > 0 && data.todos.every(t => t.status === 'completed'));
-
-  if (hasActivity) {
-    lines.push(D('─'.repeat(40)));
-  }
-
-  // ── Running tools (◐ only, max 3) ─────────────────
-  const runningTools = data.tools.filter(t => t.status === 'running').slice(-3);
-  for (const t of runningTools) {
-    const label = t.target ? `${t.name}: ${trunc(t.target)}` : t.name;
-    lines.push(`${C.yellow}◐${C.reset} ${C.cyan}${label}${C.reset}`);
-  }
-
-  // ── Running agents (◐ only, max 3) ─────────────────
-  const runningAgents = data.agents.filter(a => a.status === 'running');
-  for (const a of runningAgents.slice(-3)) {
-    const type = `${C.magenta}${a.type}${C.reset}`;
-    const modelStr = a.model ? ` ${D('[' + a.model + ']')}` : '';
-    const desc = a.description ? `: ${trunc(a.description)}` : '';
-    const et = elapsed(a.startTime);
-    lines.push(`${C.yellow}◐${C.reset} ${type}${modelStr}${desc} ${D('(' + et + ')')}`);
-  }
-
-  // ── Line 5: Todos ──────────────────────────────────
-  if (data.todos.length > 0) {
-    const completed = data.todos.filter(t => t.status === 'completed').length;
-    const total = data.todos.length;
-    const inProg = data.todos.find(t => t.status === 'in_progress');
-
-    if (inProg) {
-      lines.push(`${C.yellow}▸${C.reset} ${trunc(inProg.content, 50)} ${D('(' + completed + '/' + total + ')')}`);
-    } else if (completed === total && total > 0) {
-      lines.push(`${C.green}✓${C.reset} All tasks complete ${D('(' + completed + '/' + total + ')')}`);
+  // Line 3: running tools (hook primary, transcript fallback)
+  let runningTools = null;
+  if (data.hookTools && Object.keys(data.hookTools).length > 0) {
+    runningTools = data.hookTools;
+  } else {
+    const transcriptRunning = data.tools.filter(t => t.status === 'running');
+    if (transcriptRunning.length > 0) {
+      const byName = new Map();
+      for (const t of transcriptRunning) byName.set(t.name, (byName.get(t.name) || 0) + 1);
+      runningTools = Object.fromEntries(byName);
     }
+  }
+
+  if (runningTools) {
+    lines.push(D('─'.repeat(40)));
+    const items = [];
+    for (const [name, n] of Object.entries(runningTools)) {
+      items.push(n > 1 ? `${name} ×${n}` : name);
+    }
+    lines.push(`${C.yellow}◐${C.reset} ${C.cyan}${items.join('  ')}${C.reset}`);
   }
 
   return lines.join('\n');
@@ -520,17 +397,17 @@ try {
   if (!raw) process.exit(0);
 
   const stdin = validateStdin(raw);
-  if (!stdin || !stdin.context_window) process.exit(0);
+  if (!stdin?.context_window) process.exit(0);
 
-  const [transcriptData, git, config] = await Promise.all([
+  const [transcriptData, git, config, hookTools] = await Promise.all([
     parseTranscript(stdin.transcript_path),
     Promise.resolve(getGit(stdin.cwd)),
     Promise.resolve(getConfigCounts()),
+    Promise.resolve(readHookState()),
   ]);
 
-  const output = render(stdin, { ...transcriptData, git, config });
+  const output = render(stdin, { ...transcriptData, git, config, hookTools });
   if (output) console.log(output);
 } catch {
-  // Silent failure — don't break the status line
   process.exit(0);
 }

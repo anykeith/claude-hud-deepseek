@@ -9,12 +9,10 @@ Claude Code's built-in status line relies on Anthropic-specific rate-limit heade
 ## What You See
 
 ```
-[deepseek-v4-pro] │ my-project git:(main*) │ ⏱ 59m │ 1 CLAUDE.md │ 10 rules │ 7 hooks
+[deepseek-v4-pro] │ my-project git:(main*) │ ⏱ 59m │ 1 CLAUDE.md │ 10 rules │ 8 hooks
 Context ████░░░░░░ 45%/1000k │ Tok in:450k out:82k total:532k
 ────────────────────────────────────────
-◐ Bash: npm run build... │ ✓ Edit ×4 │ ✓ Bash ×3 │ ✓ Read ×2
-◐ explore [haiku]: Finding memory leaks
-▸ Fix auth bug (2/5)
+◐ Bash ×3  Read ×2
 ```
 
 ### Line by line
@@ -23,10 +21,7 @@ Context ████░░░░░░ 45%/1000k │ Tok in:450k out:82k total:5
 |---|---|
 | 1 | Model name, working directory, git branch (with dirty `*`), session duration, config counts |
 | 2 | Context window usage bar + percentage + window size, session token totals (in/out/total) |
-| 3 | Activity separator (only when there is activity) |
-| 4 | Running tools (`◐`) and completed tool counts by name (`✓`) from the last 20 tool invocations |
-| 5 | Agent status — running agents with type/model/description, recently completed agents |
-| 6 | Task progress — current in-progress task content + (completed/total), or "All tasks complete" |
+| 3 | Activity separator + running tools by name (only when tools are executing) |
 
 ## Install
 
@@ -59,13 +54,14 @@ The status bar will update on the next tick — type any character to trigger a 
 ```
 Claude Code harness
   │
-  ├─ stdin (JSON): context_window, model, cwd, transcript_path
+  ├─ stdin (JSON): context_window, model, cwd
   │
   ▼
 src/index.js (single file, zero npm dependencies)
   ├─ readStdin()          → Parse stdin JSON pipe
   ├─ validateStdin()      → Input validation + transcript path sandbox
-  ├─ parseTranscript()    → Stream-read transcript JSONL via Node.js readline
+  ├─ readHookState()      → Real-time running tool counters from PreToolUse hook
+  ├─ parseTranscript()    → Fallback: stream-read transcript JSONL for tool_use/tool_result
   ├─ getGit()             → git branch + dirty state
   ├─ getConfigCounts()    → Scan ~/.claude/ for config stats (5s cache)
   └─ render()             → ANSI-colored multi-line output
@@ -73,6 +69,10 @@ src/index.js (single file, zero npm dependencies)
   ▼
 stdout → Claude Code status bar
 ```
+
+### Real-time tool detection
+
+A **PreToolUse hook** (`tool-tracker.js`) fires before every tool execution, writing running tool counters to `/tmp/claude-hud-tools.json`. The plugin reads this file on each tick for near-instant tool detection. Falls back to transcript-based `tool_use`/`tool_result` matching (claude-hud method) when the hook state is stale.
 
 ## Security
 
@@ -89,9 +89,7 @@ stdout → Claude Code status bar
 | Context bar | ✅ | ✅ |
 | Token usage | ✅ (rate-limit headers) | ✅ (context_window totals) |
 | Usage limits (5h/7d) | ✅ (Anthropic headers) | ❌ (DeepSeek doesn't provide) |
-| Tool activity | ✅ | ✅ |
-| Agent activity | ✅ | ✅ |
-| Task progress | ✅ | ✅ |
+| Running tool detection | ✅ (transcript) | ✅ (hook + transcript fallback) |
 | Git branch | ✅ | ✅ |
 | Session duration | ✅ | ✅ |
 | Config counts | ✅ | ✅ |
