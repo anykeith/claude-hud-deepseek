@@ -1,6 +1,6 @@
 {
   "name": "claude-hud-deepseek",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude Code status line plugin for DeepSeek backend — context usage + token tracking",
   "type": "module",
   "main": "src/index.js",
