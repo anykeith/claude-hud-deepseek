@@ -521,7 +521,7 @@ try {
     parseTranscript(stdin.transcript_path),
     Promise.resolve(getGit(stdin.cwd)),
     Promise.resolve(getConfigCounts()),
-    Promise.resolve(readHookState(hookStateFile(stdin.transcript_path))),
+    Promise.resolve(readHookState(hookStateFile(safeString(raw.transcript_path)))),
   ]);
 
   const output = render(stdin, { ...transcriptData, git, config, hookTools });
