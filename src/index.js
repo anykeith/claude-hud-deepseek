@@ -517,6 +517,7 @@ try {
   const stdin = validateStdin(raw);
   if (!stdin?.context_window) process.exit(0);
 
+  const hookFile = hookStateFile(safeString(raw.transcript_path || ''));
   const [transcriptData, git, config, hookTools] = await Promise.all([
     parseTranscript(stdin.transcript_path),
     Promise.resolve(getGit(stdin.cwd)),
